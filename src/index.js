@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+import Interceptor from './interceptor';
+
 /**
  * @public
  * @typedef Options
@@ -111,6 +113,11 @@ function create(defaults) {
 	 */
 	redaxios.spread = (fn) => /** @type {any} */ (fn.apply.bind(fn, fn));
 
+	redaxios.interceptors = {
+		request: new Interceptor(),
+		response: new Interceptor()
+	};
+
 	/**
 	 * @private
 	 * @template T, U
@@ -152,10 +159,17 @@ function create(defaults) {
 	function redaxios(urlOrConfig, config, _method, data, _undefined) {
 		let url = /** @type {string} */ (typeof urlOrConfig != 'string' ? (config = urlOrConfig).url : urlOrConfig);
 
-		const response = /** @type {Response<any>} */ ({ config });
+		let response = /** @type {Response<any>} */ ({ config });
 
 		/** @type {Options} */
-		const options = deepMerge(defaults, config);
+		// pre-request interception
+		let options = deepMerge(defaults, config);
+		redaxios.interceptors.request.handlers.forEach((handler) => {
+			if (handler) {
+				const resultConfig = handler.done(config);
+				options = deepMerge(options, resultConfig);
+			}
+		});
 
 		/** @type {RequestHeaders} */
 		const customHeaders = {};
@@ -210,6 +224,12 @@ function create(defaults) {
 				return response;
 			}
 
+			if (!(res.status >= 200 && res.status < 300) && redaxios.interceptors.response.handlers.length > 0) {
+				redaxios.interceptors.response.handlers.forEach((handler) => {
+					if (handler && handler.error) handler.error(res);
+				});
+			}
+
 			return res[options.responseType || 'text']()
 				.then((data) => {
 					response.data = data;
@@ -219,6 +239,17 @@ function create(defaults) {
 				.catch(Object)
 				.then(() => {
 					const ok = options.validateStatus ? options.validateStatus(res.status) : res.ok;
+
+					const _ = res.status >= 200 && res.status < 300 && redaxios.interceptors.response.handlers.length > 0;
+
+					redaxios.interceptors.response.handlers.forEach((handler) => {
+						if (handler !== null) {
+							const interceptedResponse = _ ? handler.done(response) : handler.error(response);
+
+							if (interceptedResponse) response = interceptedResponse;
+						}
+					});
+
 					return ok ? response : Promise.reject(response);
 				});
 		});
